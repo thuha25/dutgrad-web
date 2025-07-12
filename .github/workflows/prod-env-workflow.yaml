@@ -1,0 +1,62 @@
+name: Build and Push Docker Image to Docker Hub (Develop)
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+    
+      - name: Set up SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+
+      - name: Clone Docker Repository (`dutgrad-docker-env`)
+        run: git clone git@github.com:BlenDMinh/dutgrad-docker-env.git
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::043309325304:role/GitHubActionsS3Access
+          aws-region: ap-southeast-1
+      
+      - name: Download config.zip from S3
+        run: aws s3 cp s3://dutgrad-ci-cd-bucket/config.zip ./config.zip
+
+      - name: Remove Existing Config Folder
+        run: rm -rf ./dutgrad-docker-env/config
+
+      - name: Extract Config Files
+        run: unzip -o config.zip -d ./dutgrad-docker-env
+
+      - name: Move Current Repo Inside dutgrad-docker-env
+        run: |
+          mkdir -p ./dutgrad-docker-env/dutgrad-web
+          rsync -av --exclude=dutgrad-docker-env --exclude=.git --exclude=databases/migrations ./ ./dutgrad-docker-env/dutgrad-web/
+
+      - name: Log in to Docker Hub
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+      - name: Build Docker Image
+        run: |
+          docker build \
+            --file dutgrad-docker-env/build/web/Dockerfile \
+            --build-arg ENVIRONMENT=prod \
+            --tag blendminh/dutgrad-web:prod-latest \
+            --tag blendminh/dutgrad-web:${{ github.sha }} \
+            dutgrad-docker-env
+
+      - name: Push Docker Image to Docker Hub
+        run: |
+          docker push blendminh/dutgrad-web:prod-latest
+          docker push blendminh/dutgrad-web:${{ github.sha }}
